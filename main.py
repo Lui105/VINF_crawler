@@ -5,8 +5,8 @@ import time
 import html
 import hashlib
 import random
-from turtledemo.penrose import start
 import requests
+from urllib import robotparser
 from urllib.parse import urljoin, urlparse
 from collections import deque
 
@@ -77,27 +77,72 @@ class FullSiteCrawler:
 
         self.headers = headers
 
+        self.user_agent: str = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/127.0.0.0 Safari/537.36"
+        )
+
         self.blocked_slugs = {
             "/wp-admin/", "/contact-us/", "/go/", "/beardeddragon/",
             "/detroitchicago/", "/ezoic/", "/porpoiseant/", "/parsonsmaize/",
             "/xmlrpc.php", "/wp-login.php", "/wp-cron.php", "/wp-json/",
-            "/feed/", "/comments/"
+            "/feed/", "/comments/", "/blog", "/analytics-101"
         }
+        self.rp = robotparser.RobotFileParser()
+        self.rp.set_url(f"{self.scheme}://{self.domain}/robots.txt")
+        try:
+            self.rp.read()
+        except Exception:
+            pass
+
+        self.explicit_deny_regexes = [
+            re.compile(r"^/basketball/"),
+            re.compile(r"^/blazers/"),
+            re.compile(r"^/dump/"),
+            re.compile(r"^/fc/"),
+            re.compile(r"^/my/"),
+            re.compile(r"^/7103"),
+            re.compile(r"^/req/"),
+            re.compile(r"^/short/"),
+            re.compile(r"^/nocdn/"),
+
+            re.compile(r"/play-index/[^/]*\.cgi(\?.*)?$", re.I),
+            re.compile(r"/play-index/plus/[^/]*\.cgi(\?.*)?$", re.I),
+            re.compile(r"/gamelog/"),
+            re.compile(r"/splits/"),
+            re.compile(r"/on-off/"),
+            re.compile(r"/lineups/"),
+            re.compile(r"/shooting/"),
+        ]
+
+        self.utility_block = {
+            "/xmlrpc.php", "/wp-login.php", "/wp-cron.php", "/wp-json/", "/feed/", "/comments/",
+        }
+
+    def allowed_by_explicit(self, url: str) -> bool:
+        pu = urlparse(url)
+        path = pu.path or "/"
+        if any(path.startswith(s) for s in self.utility_block):
+            return False
+        if re.search(r"\.(pdf|xlsx|docx?|pptx?)$", path, re.I):
+            return False
+
+        for rgx in self.explicit_deny_regexes:
+            if rgx.search(path):
+                return False
+        return True
 
     def allowed(self, url: str) -> bool:
         pu = urlparse(url)
         if pu.netloc != self.domain:
             return False
-
-        path = pu.path or "/"
-        if pu.query:
-            return False
-        if re.search(r"\.(xlsx|pdf)(?:$|\?)", path, re.I):
-            return False
-        if any(path.startswith(s) for s in self.blocked_slugs):
-            return False
-
-        return True
+        try:
+            if not self.rp.can_fetch(self.user_agent, url):
+                return False
+        except Exception:
+            pass
+        return self.allowed_by_explicit(url)
 
     def fetch(self, url: str) -> str:
         if not self.allowed(url):
@@ -174,7 +219,7 @@ class FullSiteCrawler:
                 continue
             self.visited.add(url)
 
-            print(f"\n🔎 Depth {depth}: {url}")
+            print(f"\n Depth {depth}: {url}")
             html_text = self.fetch(url)
             if not html_text:
                 continue
@@ -196,16 +241,19 @@ class FullSiteCrawler:
 
 
 def main():
-    start_url = "https://www.nbastuffer.com/"
-    output_dir = "out_dir"
+    start_url = "https://www.basketball-reference.com/"
+    output_dir = "out_dir_basketball_reference"
     depth = 3
-    min_delay = 10.0
-    max_delay = 20.0
+    min_delay = 4.0
+    max_delay = 5.0
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/127.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
     }
 
 
