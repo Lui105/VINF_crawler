@@ -7,8 +7,22 @@ import hashlib
 import random
 import requests
 from urllib import robotparser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 from collections import deque
+from datetime import datetime
+
+def write_tsv_with_metadata(path: str, rows, metadata: dict):
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        # Write metadata as commented lines (# key: value)
+        f.write("# METADATA BEGIN\n")
+        for key, val in metadata.items():
+            f.write(f"# {key}: {val}\n")
+        f.write("# METADATA END\n\n")
+
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerows(rows)
 
 
 def slugify(text: str, max_len: int = 80) -> str:
@@ -16,6 +30,31 @@ def slugify(text: str, max_len: int = 80) -> str:
     text = re.sub(r"[^a-zA-Z0-9\-_]+", "", text)
     text = text.strip("-_")
     return text[:max_len] or "page"
+
+
+def nearest_headline_above(html_text: str, table_start: int, lookback_chars: int = 90000) -> str:
+    start = max(0, table_start - lookback_chars)
+    ctx = html_text[start:table_start]
+
+
+    wrapper_ids = re.findall(r'(?is)<div[^>]*id=["\']([^"\']+)["\'][^>]*>', ctx)
+    season_mode = ""
+    if wrapper_ids:
+        wrapper_id = wrapper_ids[-1].lower()
+        if ("post" in wrapper_id) or ("playoff" in wrapper_id):
+            season_mode = "Playoffs"
+
+    headings = re.findall(r"(?is)<h[1-6][^>]*>(.*?)</h[1-6]>", ctx)
+    main_title = clean_cell(headings[-1]) if headings else ""
+
+
+    if main_title and season_mode:
+        return f"{main_title} — {season_mode}"
+    if main_title:
+        return main_title
+
+    return ""
+
 
 def page_hash(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
@@ -43,6 +82,42 @@ def extract_tables(html_text: str):
             tables.append(rows_data)
     return tables
 
+
+def extract_named_tables(html_text: str):
+
+    results = []
+
+
+    html_text = re.sub(r"(?is)<!--(.*?)-->", r"\1", html_text)
+
+    for m in re.finditer(r"(?is)<table\b[^>]*>.*?</table>", html_text):
+        table_html = m.group(0)
+        inner_match = re.search(r"(?is)<table\b[^>]*>(.*)</table>", table_html)
+        if not inner_match:
+            continue
+
+        inner_html = inner_match.group(1)
+
+        rows_data = []
+        for row_html in re.findall(r"(?is)<tr\b[^>]*>(.*?)</tr>", inner_html):
+            cell_htmls = re.findall(r"(?is)<t[hd]\b[^>]*>(.*?)</t[hd]>", row_html)
+            if not cell_htmls:
+                continue
+            cleaned_cells = [clean_cell(c) for c in cell_htmls]
+            if any(c.strip() for c in cleaned_cells):
+                rows_data.append(cleaned_cells)
+
+        if not rows_data:
+            continue
+
+        title = nearest_headline_above(html_text, m.start())
+        results.append({
+            "headline": title,
+            "rows": rows_data,
+        })
+
+    return results
+
 def write_tsv(path: str, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -53,6 +128,45 @@ def write_html(path: str, html_text: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(html_text)
+
+
+
+def normalize_url(url: str) -> str:
+    parsed = urlparse(url)
+    parsed = parsed._replace(fragment="")
+
+    allowed_params = []
+    for k, v in parse_qsl(parsed.query, keep_blank_values=True):
+        kl = k.lower()
+        if kl.startswith("utm_"):
+            continue
+        if kl in ("fbclid", "gclid", "yclid", "ref", "source"):
+            continue
+        allowed_params.append((k, v))
+
+    new_query = urlencode(allowed_params, doseq=True)
+
+    scheme = (parsed.scheme or "https").lower()
+    netloc = parsed.netloc.lower()
+
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+
+    cleaned = parsed._replace(
+        scheme=scheme,
+        netloc=netloc,
+        path=path,
+        query=new_query,
+    )
+
+    normalized = urlunparse(cleaned)
+
+    if normalized.endswith("?"):
+        normalized = normalized[:-1]
+
+    return normalized
+
 
 
 class FullSiteCrawler:
@@ -167,6 +281,7 @@ class FullSiteCrawler:
         links, seen = [], set()
         for h in hrefs:
             full = urljoin(base_url, h)
+            full = normalize_url(full)
             if full in seen:
                 continue
             seen.add(full)
@@ -188,21 +303,44 @@ class FullSiteCrawler:
         print(f"Saved HTML → {path}")
         return base
 
-    def save_tables(self, base_stem: str, html_text: str) -> int:
-        tables = extract_tables(html_text)
-        if not tables:
+    def save_tables(self, base_stem: str, html_text: str, page_url: str = "", depth: int = 0) -> int:
+        named_tables = extract_named_tables(html_text)
+        if not named_tables:
             return 0
 
         count = 0
-        for i, tbl in enumerate(tables, start=1):
-            if len(tbl) < 3 or max(len(r) for r in tbl) < 3:
+        for idx, tbl in enumerate(named_tables, start=1):
+            headline = tbl["headline"].strip() or "unknown_table"
+            rows = tbl["rows"]
+            if not rows:
                 continue
-            width = max(len(r) for r in tbl)
-            norm = [r + ([""] * (width - len(r))) for r in tbl]
-            tsv_path = os.path.join(self.tables_dir, f"{base_stem}__table{i}.tsv")
-            write_tsv(tsv_path, norm)
+
+            if len(rows) < 3 or max(len(r) for r in rows) < 3:
+                continue
+
+            width = max(len(r) for r in rows)
+            norm_rows = [r + [""] * (width - len(r)) for r in rows]
+            decorated_rows = [["__table_title__", headline]] + norm_rows
+
+            headline_slug = slugify(headline, max_len=60)
+            tsv_name = f"{base_stem}__{headline_slug}__table{idx}.tsv"
+            tsv_path = os.path.join(self.tables_dir, tsv_name)
+
+            metadata = {
+                "source_url": page_url,
+                "headline": headline,
+                "file_name": tsv_name,
+                "crawl_depth": depth,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "row_count": len(norm_rows),
+                "col_count": width,
+            }
+
+            write_tsv_with_metadata(tsv_path, decorated_rows, metadata)
+
             count += 1
-            print(f"Saved TSV ({len(norm)}×{width}) → {tsv_path}")
+            print(f"[TABLE] Saved {headline} ({len(norm_rows)}×{width}) → {tsv_path}")
+
         return count
 
     def crawl(self):
@@ -215,6 +353,7 @@ class FullSiteCrawler:
 
         while q:
             url, depth = q.popleft()
+            url = normalize_url(url)
             if url in self.visited or depth > self.max_depth:
                 continue
             self.visited.add(url)
@@ -228,11 +367,11 @@ class FullSiteCrawler:
             total_pages += 1
 
             if re.search(r"(?is)<tr\b[^>]*>.*?</tr>", html_text):
-                total_tables += self.save_tables(base_stem, html_text)
-
+                total_tables += self.save_tables(base_stem, html_text, page_url=url, depth=depth)
 
             if depth < self.max_depth:
                 for link in self.extract_links(html_text, url):
+                    link = normalize_url(link)
                     if link not in self.visited:
                         q.append((link, depth + 1))
 
@@ -243,7 +382,7 @@ class FullSiteCrawler:
 def main():
     start_url = "https://www.basketball-reference.com/"
     output_dir = "out_dir_basketball_reference"
-    depth = 3
+    depth = 0
     min_delay = 4.0
     max_delay = 5.0
     headers = {
