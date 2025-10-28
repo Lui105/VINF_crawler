@@ -265,6 +265,11 @@ class FullSiteCrawler:
         try:
             print(f"Fetch {url}")
             r = requests.get(url, headers=self.headers, timeout=15)
+            if r.status_code == 429:
+                wait = random.uniform(60, 120)
+                print(f"🚦 Hit 429. Sleeping for {wait:.1f}s...")
+                time.sleep(wait)
+                return ""
             r.raise_for_status()
             ctype = r.headers.get("Content-Type", "")
             if not ctype.lower().startswith("text/html"):
@@ -381,20 +386,22 @@ class FullSiteCrawler:
 
 def main():
     start_url = "https://www.basketball-reference.com/"
-    output_dir = "out_dir_basketball_reference"
-    depth = 0
+    output_dir = "out_dir_headings"
+    depth = 3
     min_delay = 4.0
-    max_delay = 5.0
+    max_delay = 6.0
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/127.0.0.0 Safari/537.36",
+                      "Chrome/127.0.0.0 Safari/537.36"
+                        "contact: xvitarius@stuba.sk; purpose: academic-research)"
+                       ),
+
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
     }
-
 
     crawler = FullSiteCrawler(
         start_url=start_url,
