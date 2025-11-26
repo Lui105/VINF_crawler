@@ -1,8 +1,5 @@
-# index_players.py
-# PyLucene 10.x
 import argparse
 import io
-import os
 import re
 from pathlib import Path
 
@@ -28,7 +25,6 @@ def load_player_tsv(path: Path):
 
     meta = {}
     tables = []
-    # Some files are big; use streaming
     with path.open("r", encoding="utf-8", errors="ignore") as f:
         cur_table = None
         for raw in f:
@@ -81,13 +77,22 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
     doc.add(StringField("filename", path.name, Field.Store.YES))
 
     simple_string_fields = [
-        "name", "position", "teams_played", "source_url",
+        "name", "source_url",
         "jersey_numbers", "timestamp", "crawl_depth"
     ]
     for k in simple_string_fields:
         if k in meta and meta[k]:
             doc.add(StringField(k, meta[k], Field.Store.YES))
 
+    pos_val = meta.get("position")
+    if pos_val:
+        doc.add(TextField("position", pos_val, Field.Store.YES))
+
+    teams_val = meta.get("teams_played")
+    if teams_val:
+        doc.add(StringField("teams_played_raw", teams_val, Field.Store.YES))
+        normalized = teams_val.replace(",", " ")
+        doc.add(TextField("teams_played", normalized, Field.Store.YES))
 
     text_keys = [
         "personal_info_text",
@@ -104,7 +109,6 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
             doc.add(TextField(k, val, Field.Store.YES))
             all_text_buf.write("\n")
             all_text_buf.write(val)
-
 
     for t in tables:
         body = t.get("body", "")
@@ -125,6 +129,7 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
         doc.add(TextField("all_text", all_text, Field.Store.NO))
 
     return doc
+
 
 
 def index_folder(tsv_dir: Path, index_dir: Path, commit_every: int = 500):
