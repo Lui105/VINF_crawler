@@ -76,13 +76,20 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
     doc.add(StringField("path", str(path), Field.Store.YES))
     doc.add(StringField("filename", path.name, Field.Store.YES))
 
+    name_val = meta.get("name")
+    if name_val:
+        doc.add(TextField("name", name_val, Field.Store.YES))
+
     simple_string_fields = [
-        "name", "source_url",
-        "jersey_numbers", "timestamp", "crawl_depth"
+        "source_url",
+        "jersey_numbers",
+        "timestamp",
+        "crawl_depth",
     ]
     for k in simple_string_fields:
-        if k in meta and meta[k]:
-            doc.add(StringField(k, meta[k], Field.Store.YES))
+        val = meta.get(k)
+        if val:
+            doc.add(StringField(k, val, Field.Store.YES))
 
     pos_val = meta.get("position")
     if pos_val:
@@ -112,14 +119,14 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
 
     for t in tables:
         body = t.get("body", "")
-        name = t.get("name", "")
+        tbl_name = t.get("name", "")
         title = t.get("title", "")
 
-        combined = f"{name}\n{title}\n{body}".strip()
+        combined = f"{tbl_name}\n{title}\n{body}".strip()
         if combined:
             doc.add(TextField("table", combined, Field.Store.NO))
 
-            stored_tbl_name = f"table::{name or title or 'unnamed'}"
+            stored_tbl_name = f"table::{tbl_name or title or 'unnamed'}"
             doc.add(StoredField(stored_tbl_name, combined))
             all_text_buf.write("\n")
             all_text_buf.write(combined)
@@ -129,6 +136,7 @@ def build_doc(path: Path, meta: dict, tables: list, analyzer):
         doc.add(TextField("all_text", all_text, Field.Store.NO))
 
     return doc
+
 
 
 
