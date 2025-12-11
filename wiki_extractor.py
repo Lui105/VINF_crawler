@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql import Row
 from pyspark.sql.functions import udf
 from pyspark.sql.types import (
     StringType,
@@ -388,7 +389,51 @@ extract_sections_udf = udf(
 )
 
 
+def inject_wiki(raw_tsv, wiki_bio, wiki_hs, wiki_college, wiki_pl):
+    if raw_tsv is None:
+        return None
 
+    def _one(s):
+        return " ".join((s or "").split())
+
+    wiki_meta_lines = []
+    if wiki_bio:
+        wiki_meta_lines.append(f"# wiki_bio\t{_one(wiki_bio)}\n")
+    if wiki_hs:
+        wiki_meta_lines.append(f"# wiki_high_school\t{_one(wiki_hs)}\n")
+    if wiki_college:
+        wiki_meta_lines.append(f"# wiki_college\t{_one(wiki_college)}\n")
+    if wiki_pl:
+        wiki_meta_lines.append(f"# wiki_personal_life\t{_one(wiki_pl)}\n")
+    if not wiki_meta_lines:
+        return raw_tsv
+
+    lines = raw_tsv.splitlines(keepends=True)
+
+    insert_idx = None
+    for i, line in enumerate(lines):
+        if line.lstrip().lower().startswith("# timestamp"):
+            insert_idx = i + 1
+            break
+    if insert_idx is None:
+        idx = 0
+        while idx < len(lines) and lines[idx].lstrip().startswith("#"):
+            idx += 1
+        insert_idx = idx
+
+    if insert_idx < len(lines) and lines[insert_idx].strip() != "":
+        wiki_meta_lines.append("\n")
+
+    return "".join(lines[:insert_idx]) + "".join(wiki_meta_lines) + "".join(lines[insert_idx:])
+
+
+def extract_name_from_tsv(text, fallback_name):
+    m = re.search(r"(?im)^\s*#\s*name\s*[:\t]\s*(.+?)\s*$", text)
+    if m:
+        return m.group(1).strip()
+    fb = re.sub(r"\.tsv$", "", fallback_name, flags=re.I)
+    fb = re.sub(r"[-_]+", " ", fb).strip()
+    return fb
 
 def main():
     ap = argparse.ArgumentParser()
@@ -529,8 +574,6 @@ def main():
 
     print(f"Matched {len(wiki_by_plain)} wiki pages to player names")
 
-    players_df = spark.createDataFrame(players)
-
     wiki_records = []
     for key, r in wiki_by_plain.items():
         wiki_records.append({
@@ -542,20 +585,58 @@ def main():
         })
     wiki_df = spark.createDataFrame(wiki_records)
 
+    tsv_src_uri = Path(args.tsv_src).resolve().as_uri()
+    raw_rdd = spark.sparkContext.wholeTextFiles(str(tsv_src_uri + "/*"))
+
+
+
+
+    rows = raw_rdd.map(lambda kv: Row(file=kv[0], raw_tsv=kv[1])).toDF()
+
+    basename = F.regexp_extract(F.col("file"), r"([^/\\]+)$", 1)
+    get_name_udf = F.udf(lambda txt, base: extract_name_from_tsv(txt, base), StringType())
+    players_df = rows.withColumn("name", get_name_udf(F.col("raw_tsv"), basename))
+
+
     joined = (
-        players_df
-        .join(wiki_df, on="name", how="left")
+        players_df.join(wiki_df, on="name", how="left")
+        .select(
+            "name", "file", "raw_tsv",
+            F.coalesce(F.col("wiki_bio"), F.lit("")).alias("wiki_bio"),
+            F.coalesce(F.col("wiki_high_school"), F.lit("")).alias("wiki_high_school"),
+            F.coalesce(F.col("wiki_college"), F.lit("")).alias("wiki_college"),
+            F.coalesce(F.col("wiki_personal_life"), F.lit("")).alias("wiki_personal_life"),
+        )
     )
 
-    (out_dir / "joined").mkdir(parents=True, exist_ok=True)
-    joined.coalesce(1).write.mode("overwrite") \
-        .option("header", True) \
-        .option("delimiter", "\t") \
-        .csv(str(out_dir_uri + "/joined"))
 
-    print(f"Wrote Spark-joined TSV to {out_dir / 'joined'}")
 
-    spark.stop()
+    inject_udf = F.udf(inject_wiki, StringType())
+    with_new = joined.withColumn(
+        "new_tsv",
+        inject_udf("raw_tsv", "wiki_bio", "wiki_high_school", "wiki_college", "wiki_personal_life")
+    )
+
+    out_dir = Path(args.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_partition(iter_rows):
+        for r in iter_rows:
+            try:
+                src = Path(r.file)
+                out_path = out_dir / src.name
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                content = r.new_tsv if r.new_tsv is not None else r.raw_tsv
+                if content is None:
+                    continue
+                with open(out_path, "w", encoding="utf-8", errors="ignore") as f:
+                    f.write(content)
+            except Exception:
+                pass
+
+    with_new.select("file", "raw_tsv", "new_tsv").rdd.foreachPartition(_write_partition)
+
+    print(f"Done. Wrote augmented TSVs to {out_dir}")
 
 
 if __name__ == "__main__":
