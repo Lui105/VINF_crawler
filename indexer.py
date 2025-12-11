@@ -9,7 +9,7 @@ import orjson
 
 
 def sha1_first_byte(s: str) -> int:
-    return hashlib.sha1(s.encode('utf-8')).digest()[0]  # 0..255
+    return hashlib.sha1(s.encode('utf-8')).digest()[0]
 
 def write_sharded_inverted_index(out_dir: Path, scope_name: str, inv: Dict[str, List[int]]):
 
@@ -284,9 +284,7 @@ def write_stats_jsonl(out_dir: Path, stats: List[Dict]):
         for rec in stats:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-# -------------
-# Build (text + stats)
-# -------------
+
 
 def build_index(src_dir: Path, out_dir: Path):
     t0 = time.time()
@@ -316,13 +314,11 @@ def build_index(src_dir: Path, out_dir: Path):
     for i, path in enumerate(files):
         doc, meta, tables = doc_from_tsv(path, i)
 
-        # docstore + texts
         docstore.append(doc_to_light(doc))
         texts_f.write(json.dumps({"id": doc.id, "name": doc.text_name,
                                   "meta": doc.text_meta, "tables": doc.text_tables},
                                  ensure_ascii=False) + "\n")
 
-        # inverted indexes
         toks_name = tokenize(doc.text_name)
         toks_meta = tokenize(doc.text_meta)
         toks_tables = tokenize(doc.text_tables)
@@ -331,13 +327,11 @@ def build_index(src_dir: Path, out_dir: Path):
         add_to_inv(inv_tables, doc.id, toks_tables)
         add_to_inv(inv_full, doc.id, uniq_preserve(toks_name + toks_meta + toks_tables))
 
-        # facets
         for tm in doc.teams_played: facet_add(facets["teams"], tm, doc.id)
         for j in doc.jersey_numbers: facet_add(facets["jerseys"], j, doc.id)
         for tok in uniq_preserve(tokenize(doc.position)): facet_add(facets["positions"], tok, doc.id)
         for tid in doc.table_ids: facet_add(facets["table_ids"], tid, doc.id)
 
-        # per-game stats
         stats_records.extend(extract_per_game_records(meta, tables, doc.id))
 
         if i % 10 == 0:
@@ -345,26 +339,21 @@ def build_index(src_dir: Path, out_dir: Path):
 
     texts_f.close()
 
-    # persist text index
     (out_dir / "docstore.json").write_text(
         json.dumps([asdict(d) for d in docstore], ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # FAST PATH: sharded inverted indexes (search reads only touched buckets)
     write_sharded_inverted_index(out_dir, "full", inv_full)
     write_sharded_inverted_index(out_dir, "name", inv_name)
     write_sharded_inverted_index(out_dir, "meta", inv_meta)
     write_sharded_inverted_index(out_dir, "tables", inv_tables)
 
 
-    # persist stats side index
     write_stats_jsonl(out_dir, stats_records)
 
     print(f"Indexed {len(files)} TSVs; stats rows: {len(stats_records)} -> {out_dir} in {time.time()-t0:.2f}s")
 
-# -------------
-# CLI (build only)
-# -------------
+
 
 def main():
     ap = argparse.ArgumentParser(description="Build custom TSV index (no DB) + Per-Game stats.")

@@ -31,7 +31,6 @@ def normalize_spaces(s: str) -> str:
 
 _TOKEN_RE = None
 def tokenize(text: str) -> List[str]:
-    """Keep in sync with indexer.py"""
     global _TOKEN_RE
     if _TOKEN_RE is None:
         import re
@@ -41,7 +40,7 @@ def tokenize(text: str) -> List[str]:
 
 
 def sha1_first_byte(s: str) -> int:
-    return hashlib.sha1(s.encode("utf-8")).digest()[0]  # 0..255
+    return hashlib.sha1(s.encode("utf-8")).digest()[0]
 
 def load_sharded_postings(index_dir: str, tokens: List[str]) -> Dict[str, List[int]]:
 
@@ -60,7 +59,7 @@ def load_sharded_postings(index_dir: str, tokens: List[str]) -> Dict[str, List[i
         if not os.path.exists(shard_path):
             continue
         with gzip.open(shard_path, "rb") as gz:
-            shard = orjson.loads(gz.read())  # {token: [doc_ids]}
+            shard = orjson.loads(gz.read())
         for t in toks:
             lst = shard.get(t)
             if lst:

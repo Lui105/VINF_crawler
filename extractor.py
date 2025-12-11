@@ -369,7 +369,6 @@ def parse_top_metadata_block(path: Path) -> dict:
     with path.open("r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             s = line.strip()
-            # Accept UTF-8 BOM if present on first line
             if s.startswith("\ufeff#"):
                 s = s[1:]
 
@@ -421,7 +420,6 @@ def load_side_metadata(meta_dir: Path, html_stem: str) -> dict:
         "_meta_file": str(path),
     }
 
-# --------------------------------------------------------------------------
 
 def write_single_tsv(tsv_path: Path, meta: dict, tables: list):
     tsv_path.parent.mkdir(parents=True, exist_ok=True)

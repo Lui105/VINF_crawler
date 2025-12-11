@@ -15,7 +15,6 @@ def write_tsv_with_metadata(path: str, rows, metadata: dict):
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        # Write metadata as commented lines (# key: value)
         f.write("# METADATA BEGIN\n")
         for key, val in metadata.items():
             f.write(f"# {key}: {val}\n")
